@@ -1,89 +1,84 @@
 'use strict';
 
-const http = require('node:http');
 const crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
 
-const HOST = '127.0.0.1';
-const PORT = Number(process.env.REMOTE_UNLOCK_PORT || 8765);
-const TOKEN = process.env.REMOTE_UNLOCK_TOKEN || '';
+const ENDPOINT = process.env.REMOTE_UNLOCK_ENDPOINT || '';
+const PUBLISHABLE_KEY = process.env.REMOTE_UNLOCK_PUBLISHABLE_KEY || '';
+const DEVICE_SECRET = process.env.REMOTE_UNLOCK_DEVICE_SECRET || '';
+const POLL_INTERVAL_MS = Math.max(5000, Number(process.env.REMOTE_UNLOCK_POLL_MS || 10000));
 
-if (TOKEN.length < 32) {
-  console.error('REMOTE_UNLOCK_TOKEN must be at least 32 characters. Use start-agent.ps1 to create a token.');
+if (!ENDPOINT.startsWith('https://') ||
+    !ENDPOINT.endsWith('/functions/v1/remoteunlock') ||
+    !PUBLISHABLE_KEY ||
+    DEVICE_SECRET.length < 32) {
+  console.error('Missing/invalid cloud relay configuration. Run .\\setup-cloud-secrets.ps1 and configure the agent endpoint.');
   process.exit(1);
 }
 
-function authorized(req) {
-  const header = req.headers.authorization || '';
-  const expected = Buffer.from('Bearer ' + TOKEN);
-  const actual = Buffer.from(header);
-  return actual.length === expected.length && crypto.timingSafeEqual(actual, expected);
+function safeEqual(actual, expected) {
+  const a = Buffer.from(String(actual || ''));
+  const b = Buffer.from(String(expected || ''));
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
-const server = http.createServer((req, res) => {
-  res.setHeader('Content-Type', 'application/json; charset=utf-8');
-  res.setHeader('Cache-Control', 'no-store');
-  if (req.method === 'GET' && req.url === '/health') {
-    res.writeHead(200);
-    return res.end(JSON.stringify({ ok: true, service: 'RemoteUnlock Windows Agent', actions: ['lock'] }));
-  }
-  if (req.method !== 'POST' || req.url !== '/command') {
-    res.writeHead(404);
-    return res.end(JSON.stringify({ error: 'not_found' }));
-  }
-  if (!authorized(req)) {
-    res.writeHead(401);
-    return res.end(JSON.stringify({ error: 'unauthorized' }));
-  }
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-  let body = '';
-  req.on('data', chunk => {
-    body += chunk;
-    if (body.length > 1024) {
-      res.writeHead(413);
-      res.end(JSON.stringify({ error: 'payload_too_large' }));
-      req.destroy();
-    }
+async function pollOnce() {
+  const response = await fetch(ENDPOINT, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'apikey': PUBLISHABLE_KEY,
+      'x-device-secret': DEVICE_SECRET,
+    },
+    body: JSON.stringify({ operation: 'poll' }),
+    signal: AbortSignal.timeout(10000),
   });
-  req.on('end', () => {
-    let payload;
-    try { payload = JSON.parse(body || '{}'); } catch {
-      res.writeHead(400);
-      return res.end(JSON.stringify({ error: 'invalid_json' }));
-    }
-    if (payload.action !== 'lock') {
-      res.writeHead(400);
-      return res.end(JSON.stringify({ error: 'unsupported_action', allowed: ['lock'] }));
-    }
 
-    const child = spawn('rundll32.exe', ['user32.dll,LockWorkStation'], {
-      windowsHide: true,
-      shell: false,
-      stdio: 'ignore',
-    });
-    child.once('error', err => {
-      console.error('Lock command failed:', err.message);
-      if (!res.headersSent) {
-        res.writeHead(500);
-        res.end(JSON.stringify({ error: 'lock_failed' }));
-      }
-    });
-    child.once('spawn', () => {
-      console.log(new Date().toISOString(), 'Authenticated lock command accepted');
-      if (!res.headersSent) {
-        res.writeHead(202);
-        res.end(JSON.stringify({ ok: true, accepted: true, action: 'lock' }));
-      }
-    });
+  const raw = await response.text();
+  let payload = {};
+  try { payload = raw ? JSON.parse(raw) : {}; } catch { /* handled below */ }
+
+  if (!response.ok) {
+    if (response.status === 401) {
+      throw new Error('Cloud relay rejected the device secret. Check REMOTE_UNLOCK_DEVICE_SECRET in Supabase and agent-config.json.');
+    }
+    throw new Error('Cloud relay returned HTTP ' + response.status + ': ' + raw.slice(0, 300));
+  }
+
+  const command = payload.command;
+  if (!command) return;
+  if (command.action !== 'lock') {
+    console.warn('Ignored unsupported cloud command.');
+    return;
+  }
+
+  const child = spawn('rundll32.exe', ['user32.dll,LockWorkStation'], {
+    windowsHide: true,
+    shell: false,
+    stdio: 'ignore',
   });
-});
+  child.once('error', err => console.error('Could not execute Windows lock command:', err.message));
+  child.once('spawn', () => console.log(new Date().toISOString(), 'Cloud lock command received and submitted to Windows.'));
+}
 
-server.listen(PORT, HOST, () => {
-  console.log('RemoteUnlock agent listening on http://' + HOST + ':' + PORT);
-  console.log('Keep this service private. Expose it only through a trusted HTTPS VPN relay such as Tailscale Serve.');
-  console.log('Supported action: lock only. Windows sign-in/unlock is intentionally not exposed.');
-});
-server.on('error', err => {
-  console.error('Agent server error:', err.message);
+async function main() {
+  console.log('RemoteUnlock cloud agent started.');
+  console.log('Endpoint:', ENDPOINT);
+  console.log('Polling interval:', POLL_INTERVAL_MS + 'ms');
+  console.log('This process only polls for lock commands; it does not open a listening port.');
+  while (true) {
+    try {
+      await pollOnce();
+    } catch (err) {
+      console.error(new Date().toISOString(), err.message);
+    }
+    await sleep(POLL_INTERVAL_MS);
+  }
+}
+
+main().catch(err => {
+  console.error(err);
   process.exit(1);
 });

@@ -1,50 +1,98 @@
 # RemoteUnlock
 
-A Flutter Android dashboard plus a small Windows companion agent for authenticated remote PC locking.
+A Flutter Android app and lightweight Windows agent for remotely locking your own Windows session through a hosted Supabase relay.
 
-## Current capabilities
+## Architecture
 
-- Dark, responsive Flutter dashboard.
-- Lock the current Windows session from the Windows build.
-- Android client can send an authenticated `lock` command to the Windows agent over HTTPS.
-- Agent binds to `127.0.0.1` only and uses a 256-bit random bearer token.
-- Unlock is deliberately not implemented: Windows protects interactive sign-in. Use Windows Hello/PIN or a trusted remote desktop tool to sign in.
+- Android sends a lock request to a Supabase Edge Function over HTTPS.
+- The Edge Function authenticates the command secret and stores a short-lived command in a private database queue.
+- The Windows agent makes outbound HTTPS polls every 10 seconds and claims pending commands.
+- The Windows agent opens **no listening port**. No router port forwarding or Tailscale Serve is required.
+- The agent supports only the `lock` action. Windows unlock/sign-in is deliberately not implemented.
 
-## Build the Android app
+The laptop must be awake, connected to the internet, and running the small Windows agent to receive commands. The app does not need to be open on the laptop. A command expires after 2 minutes if the agent doesn't collect it.
+
+## Cloud setup
+
+You need an active Supabase project. The current account must have access to that project before deployment.
+
+1. Install the [Supabase CLI](https://supabase.com/docs/guides/cli) and sign in:
+
+   ```powershell
+   supabase login
+   ```
+
+2. From this repository, link the project (replace the placeholder with your project ref):
+
+   ```powershell
+   supabase link --project-ref YOUR_PROJECT_REF
+   ```
+
+3. Create the two random secrets and local agent configuration:
+
+   ```powershell
+   .\setup-cloud-secrets.ps1
+   ```
+
+   The script creates `cloud-secrets.json` and `cloud-secrets.env`. Both are excluded from Git. It prints the command secret for the Android app. Never commit or share these files.
+
+4. Apply the database migration and set Edge Function secrets:
+
+   ```powershell
+   supabase db push
+   supabase secrets set --env-file ./cloud-secrets.env
+   ```
+
+5. Deploy the Edge Function with JWT verification disabled at the gateway. The function performs its own constant-time shared-secret checks:
+
+   ```powershell
+   supabase functions deploy remoteunlock --no-verify-jwt
+   ```
+
+6. In Supabase Dashboard, open **Project Settings → API Keys** and copy the **publishable key**. The function endpoint is:
+
+   ```text
+   https://YOUR_PROJECT_REF.supabase.co/functions/v1/remoteunlock
+   ```
+
+7. Run `.\setup-cloud-secrets.ps1` again and paste the function endpoint and publishable key when prompted. It reuses existing secrets and writes the ignored local file `windows_agent\agent-config.json`.
+
+## Start the Windows agent
+
+Requires Node.js 18 or newer.
+
+```powershell
+cd C:\Users\YOUR_USER\remote_unlock\windows_agent
+.\start-agent.ps1
+```
+
+The agent polls the hosted relay every 10 seconds and only executes `rundll32.exe user32.dll,LockWorkStation` for a valid `lock` command. It does not accept incoming network connections, arbitrary shell commands, unlock requests, or file-access requests.
+
+To use the Android app, open **Connection settings** and enter:
+
+- **Supabase Edge Function URL:** the full URL ending in `/functions/v1/remoteunlock`
+- **Supabase publishable key:** the public project key from the dashboard
+- **Command secret:** the value printed by `setup-cloud-secrets.ps1`
+
+The app keeps pairing details in memory only; you'll need to enter them again after restarting the app.
+
+## Build and verify
 
 ```powershell
 flutter pub get
 flutter analyze
+flutter test
 flutter build apk --debug
 ```
 
 APK output: `build\app\outputs\flutter-apk\app-debug.apk`.
 
-## Start the Windows agent
-
-Requires Node.js on the Windows PC.
-
-```powershell
-cd C:\Users\roypa\remote_unlock\windows_agent
-.\start-agent.ps1
-```
-
-On first run, the script creates `pairing-token.txt` with a random token and prints it to the console. Keep it secret. Do not commit or share it.
-
-The agent listens on `127.0.0.1:8765` and supports only:
-
-- `GET /health`
-- `POST /command` with `Authorization: Bearer <token>` and JSON `{ "action": "lock" }`
-
-## Secure remote access setup
-
-Do **not** port-forward port 8765 or expose it directly to the public internet. For access from anywhere, use a private VPN such as Tailscale and its HTTPS Serve feature. Install/sign in to Tailscale on the PC and phone, then expose the local agent through Tailscale Serve (for example, `tailscale serve --bg 8765`, checking the current Tailscale CLI help for the supported syntax). Use the HTTPS hostname Tailscale provides in the Android app's pairing dialog, plus the token printed by `start-agent.ps1`.
-
-The pairing token is held in app memory only and must be entered again after restarting the app. Android sends commands only to HTTPS URLs. The agent is not an internet relay by itself; a private HTTPS route must be configured before remote commands can work.
-
 ## Security notes
 
-- Never use a weak or reused pairing token.
-- Keep the PC and phone signed into your own private VPN tailnet.
-- The agent intentionally has no unlock, shell, arbitrary-command, or file-access API.
-- A `202 Accepted` response means the lock command was accepted by the agent, not independent proof that the screen visibly locked.
+- Keep the command and device secrets private and different from each other.
+- Never expose a Supabase service-role/secret key in the Android app.
+- The database queue has RLS enabled and denies direct access to client roles; only the Edge Function's server-side key accesses it.
+- Commands expire after two minutes and can only request a lock.
+- The publishable key is designed for client use; it is not a substitute for the command secret.
+- A successful queue response means the command was accepted by the cloud, not proof that Windows visibly locked.
+- The Windows agent must be running for the command to be delivered. The hosted relay removes the local HTTP server and inbound port, but cannot operate a powered-off PC.

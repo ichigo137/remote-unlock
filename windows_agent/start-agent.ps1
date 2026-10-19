@@ -1,20 +1,22 @@
 $ErrorActionPreference = 'Stop'
 Set-Location $PSScriptRoot
-$tokenPath = Join-Path $PSScriptRoot 'pairing-token.txt'
-if (-not (Test-Path $tokenPath)) {
-  $bytes = New-Object byte[] 32
-  [System.Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
-  $token = [Convert]::ToBase64String($bytes).TrimEnd('=').Replace('+','-').Replace('/','_')
-  [System.IO.File]::WriteAllText($tokenPath, $token)
-} else {
-  $token = (Get-Content $tokenPath -Raw).Trim()
+
+$configPath = Join-Path $PSScriptRoot 'agent-config.json'
+if (-not (Test-Path $configPath)) {
+  Write-Host 'Agent configuration is missing.' -ForegroundColor Yellow
+  Write-Host 'Run ..\setup-cloud-secrets.ps1 after creating/deploying the Supabase relay, then try again.'
+  exit 1
 }
-$env:REMOTE_UNLOCK_TOKEN = $token
-$env:REMOTE_UNLOCK_PORT = '8765'
-Write-Host ''
-Write-Host 'RemoteUnlock Windows Agent' -ForegroundColor Cyan
-Write-Host 'Pairing token (keep private):' -ForegroundColor Yellow
-Write-Host $token
-Write-Host ''
-Write-Host 'Agent will listen on localhost:8765. Do not expose this port directly to the public internet.' -ForegroundColor DarkYellow
+
+$config = Get-Content $configPath -Raw | ConvertFrom-Json
+if (-not $config.endpoint -or -not $config.publishableKey -or -not $config.deviceSecret) {
+  Write-Host 'agent-config.json is incomplete. Re-run ..\setup-cloud-secrets.ps1.' -ForegroundColor Red
+  exit 1
+}
+
+$env:REMOTE_UNLOCK_ENDPOINT = [string]$config.endpoint
+$env:REMOTE_UNLOCK_PUBLISHABLE_KEY = [string]$config.publishableKey
+$env:REMOTE_UNLOCK_DEVICE_SECRET = [string]$config.deviceSecret
+if ($config.pollIntervalMs) { $env:REMOTE_UNLOCK_POLL_MS = [string]$config.pollIntervalMs }
+
 node .\server.js

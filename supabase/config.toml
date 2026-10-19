@@ -1,0 +1,2 @@
+[functions.remoteunlock]
+verify_jwt = false

@@ -41,11 +41,13 @@ class _DashboardState extends State<Dashboard> {
   String status = 'Not paired';
   String pcName = 'MY WINDOWS PC';
   final endpoint = TextEditingController();
+  final publishableKeyController = TextEditingController();
   final secret = TextEditingController();
 
   bool get isWindows => !kIsWeb && Platform.isWindows;
 
   String relayUrl = '';
+  String supabasePublishableKey = '';
   String authToken = '';
 
   Future<void> lockPc() async {
@@ -63,22 +65,25 @@ class _DashboardState extends State<Dashboard> {
       }
       return;
     }
-    if (relayUrl.isEmpty || authToken.isEmpty) { _showPairDialog(); return; }
+    if (relayUrl.isEmpty || supabasePublishableKey.isEmpty || authToken.isEmpty) { _showPairDialog(); return; }
     setState(() => busy = true);
     final client = HttpClient()..connectionTimeout = const Duration(seconds: 8);
     try {
-      final uri = Uri.parse('${relayUrl.replaceFirst(RegExp(r'/+$'), '')}/command');
-      if (uri.scheme != 'https') throw const FormatException('HTTPS is required');
+      final uri = Uri.parse(relayUrl.trim());
+      if (uri.scheme != 'https' || !uri.path.endsWith('/functions/v1/remoteunlock')) {
+        throw const FormatException('Use the HTTPS Supabase Edge Function URL');
+      }
       final request = await client.postUrl(uri);
-      request.headers.set(HttpHeaders.authorizationHeader, 'Bearer $authToken');
+      request.headers.set('apikey', supabasePublishableKey);
+      request.headers.set('x-command-secret', authToken);
       request.headers.contentType = ContentType.json;
-      request.write('{"action":"lock"}');
+      request.write('{"operation":"command","action":"lock"}');
       final response = await request.close();
       final body = await response.transform(utf8.decoder).join();
       if (response.statusCode < 200 || response.statusCode >= 300) throw HttpException('Relay rejected command (${response.statusCode}): $body');
       if (mounted) {
-        setState(() { status = 'Lock command accepted'; busy = false; });
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('PC agent accepted the lock command.')));
+        setState(() { status = 'Lock command queued'; busy = false; });
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Lock command queued. Your PC must be online to receive it.')));
       }
     } catch (e) {
       if (mounted) {
@@ -90,28 +95,33 @@ class _DashboardState extends State<Dashboard> {
 
   void _showPairDialog() {
     endpoint.text = relayUrl;
+    publishableKeyController.text = supabasePublishableKey;
     secret.text = authToken;
     showDialog<void>(context: context, builder: (ctx) => AlertDialog(
       backgroundColor: panel,
       title: const Text('Pair your Windows PC'),
       content: SizedBox(width: 420, child: Column(mainAxisSize: MainAxisSize.min, children: [
-        const Text('Enter your PC agent’s HTTPS address and the shared token configured on that PC. Keep the endpoint private; HTTPS is required.', style: TextStyle(color: muted, fontSize: 12, height: 1.5)),
+        const Text('Connect to your hosted Supabase relay. The publishable key identifies the project; the command secret authorizes your lock requests. Keep the command secret private.', style: TextStyle(color: muted, fontSize: 12, height: 1.5)),
         const SizedBox(height: 16),
-        TextField(controller: endpoint, keyboardType: TextInputType.url, decoration: const InputDecoration(labelText: 'HTTPS endpoint', hintText: 'https://your-pc.example.ts.net', border: OutlineInputBorder())),
+        TextField(controller: endpoint, keyboardType: TextInputType.url, decoration: const InputDecoration(labelText: 'Supabase Edge Function URL', hintText: 'https://project.supabase.co/functions/v1/remoteunlock', border: OutlineInputBorder())),
         const SizedBox(height: 12),
-        TextField(controller: secret, obscureText: true, decoration: const InputDecoration(labelText: 'Pairing token', border: OutlineInputBorder())),
+        TextField(controller: publishableKeyController, obscureText: false, decoration: const InputDecoration(labelText: 'Supabase publishable key', border: OutlineInputBorder())),
+        const SizedBox(height: 12),
+        TextField(controller: secret, obscureText: true, decoration: const InputDecoration(labelText: 'Command secret', border: OutlineInputBorder())),
       ])),
       actions: [
         TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
         FilledButton(onPressed: () async {
-          final url = endpoint.text.trim(); final token = secret.text.trim();
+          final url = endpoint.text.trim();
+          final publicKey = publishableKeyController.text.trim();
+          final token = secret.text.trim();
           final uri = Uri.tryParse(url);
-          if (uri == null || uri.scheme != 'https' || uri.host.isEmpty || token.length < 24) {
-            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Use a valid HTTPS URL and a token of at least 24 characters.'))); return;
+          if (uri == null || uri.scheme != 'https' || uri.host.isEmpty || !uri.path.endsWith('/functions/v1/remoteunlock') || publicKey.isEmpty || token.length < 32) {
+            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Use the full HTTPS Edge Function URL, a publishable key, and a command secret of at least 32 characters.'))); return;
           }
           Navigator.pop(ctx);
-          setState(() { relayUrl = url; authToken = token; connected = true; status = 'Paired (not yet tested)'; });
-          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Pairing details saved in app memory. Test by sending a lock command.')));
+          setState(() { relayUrl = url; supabasePublishableKey = publicKey; authToken = token; connected = true; status = 'Cloud relay configured'; });
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Cloud relay settings saved in app memory. Send a lock command to test.')));
         }, child: const Text('Save pairing')),
       ],
     ));
@@ -127,7 +137,7 @@ class _DashboardState extends State<Dashboard> {
   }
 
   @override
-  void dispose() { endpoint.dispose(); secret.dispose(); super.dispose(); }
+  void dispose() { endpoint.dispose(); publishableKeyController.dispose(); secret.dispose(); super.dispose(); }
 
   @override
   Widget build(BuildContext context) {
@@ -184,7 +194,7 @@ class _DashboardState extends State<Dashboard> {
               Row(children: [
                 Expanded(child: _metric(Icons.lock_outline_rounded, 'Lock state', isWindows ? 'Ready' : 'Unknown', violet)),
                 const SizedBox(width: 10),
-                Expanded(child: _metric(Icons.wifi_rounded, 'Relay', connected ? 'Online' : 'Offline', mint)),
+                Expanded(child: _metric(Icons.wifi_rounded, 'Relay', connected ? 'Configured' : 'Not set', mint)),
                 const SizedBox(width: 10),
                 Expanded(child: _metric(Icons.shield_outlined, 'Security', 'Protected', const Color(0xFFFFC46B))),
               ]),
