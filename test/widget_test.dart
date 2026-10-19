@@ -6,6 +6,6 @@ void main() {
     await tester.pumpWidget(const RemoteUnlockApp());
     expect(find.text('RemoteUnlock'), findsOneWidget);
     expect(find.text('LOCK MY PC'), findsOneWidget);
-    expect(find.text('UNLOCK / SIGN-IN OPTIONS'), findsOneWidget);
+    expect(find.text('OPEN REMOTE DESKTOP'), findsOneWidget);
   });
 }

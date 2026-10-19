@@ -9,6 +9,7 @@ build/
 
 # Android / IDE
 .idea/
+android/.kotlin/
 *.iml
 local.properties
 android/key.properties

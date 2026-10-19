@@ -3,6 +3,7 @@ import 'dart:io';
 import 'dart:ui';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 void main() => runApp(const RemoteUnlockApp());
 
@@ -127,12 +128,33 @@ class _DashboardState extends State<Dashboard> {
     ));
   }
 
+  Future<void> _openRemoteDesktop() async {
+    final uri = Uri.parse('https://remotedesktop.google.com/access');
+    try {
+      final opened = await launchUrl(uri, mode: LaunchMode.externalApplication);
+      if (!opened && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Could not open Chrome Remote Desktop. Open remotedesktop.google.com/access manually.')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not open remote desktop: $e')),
+        );
+      }
+    }
+  }
+
   void _showUnlockInfo() {
     showDialog<void>(context: context, builder: (ctx) => AlertDialog(
       backgroundColor: panel,
-      title: const Text('Windows sign-in stays secure'),
-      content: const Text('Windows intentionally protects the lock screen from third-party remote unlock commands. This app does not bypass sign-in or collect your password. To regain access, use Windows Hello/PIN, or set up Windows Remote Desktop or another trusted remote-access tool.'),
-      actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Understood'))],
+      title: const Text('Remote sign-in on Windows Home'),
+      content: const Text('Windows 11 Home cannot host Microsoft Remote Desktop. RemoteUnlock uses Chrome Remote Desktop for the actual screen, keyboard and mouse session. First set up remote access on this PC at remotedesktop.google.com/access, sign in with your Google account, enable remote access and create a strong PIN. Then open the same page on Android and connect. Enter your normal Windows PIN/password on the real Windows sign-in screen. RemoteUnlock never stores Windows credentials or bypasses sign-in.'),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Close')),
+        FilledButton(onPressed: () { Navigator.pop(ctx); _openRemoteDesktop(); }, child: const Text('Open remote access')),
+      ],
     ));
   }
 
@@ -258,8 +280,8 @@ class _DashboardState extends State<Dashboard> {
       const SizedBox(height: 10),
       SizedBox(width: double.infinity, height: 48, child: OutlinedButton.icon(
         onPressed: _showUnlockInfo,
-        icon: const Icon(Icons.key_rounded, size: 17),
-        label: const Text('UNLOCK / SIGN-IN OPTIONS', style: TextStyle(fontSize: 10, letterSpacing: .8, fontWeight: FontWeight.w700)),
+        icon: const Icon(Icons.desktop_windows_rounded, size: 17),
+        label: const Text('OPEN REMOTE DESKTOP', style: TextStyle(fontSize: 10, letterSpacing: .8, fontWeight: FontWeight.w700)),
         style: OutlinedButton.styleFrom(foregroundColor: const Color(0xFFD4D0FF), side: BorderSide(color: violet.withValues(alpha: .35)), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15))),
       )),
       const SizedBox(height: 10),
