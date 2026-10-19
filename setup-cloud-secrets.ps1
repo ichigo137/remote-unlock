@@ -6,7 +6,9 @@ $envPath = Join-Path $root 'cloud-secrets.env'
 if (-not (Test-Path $secretPath)) {
   function New-UrlSafeSecret {
     $bytes = New-Object byte[] 32
-    [System.Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
+    $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    $rng.GetBytes($bytes)
+    $rng.Dispose()
     return [Convert]::ToBase64String($bytes).TrimEnd('=').Replace('+','-').Replace('/','_')
   }
 
