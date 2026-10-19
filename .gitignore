@@ -1,0 +1,20 @@
+# Flutter / Dart
+.dart_tool/
+.packages
+.pub-cache/
+build/
+.flutter-plugins
+.flutter-plugins-dependencies
+.metadata
+
+# Android / IDE
+.idea/
+*.iml
+local.properties
+android/key.properties
+android/app/*.jks
+
+# Secrets and local configuration
+.env
+*.token
+pairing-token.txt
